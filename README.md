@@ -5,13 +5,8 @@ From the project root directory in your terminal:
 3. ```gcc lex.yy.c x_parser.tab.c -o compiler -lfl```
 ## To run:
 ```./compiler program.il```
-## Lexical Components:
-Keywords: programa (program), sugod (start), tapos (finish), mga (var)
-Types: numero (int), lutaw (float), litera (char)
-Operators: +, -, *, /, =
-Delimiters: { }, ( ), ,, .
 
-## **PROGRAM STRUCTURE**
+## **Program Structure**
 
 ### **1. Program Declaration**
 ```
