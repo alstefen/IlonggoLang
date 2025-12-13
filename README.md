@@ -6,6 +6,8 @@ From the project root directory in your terminal:
 ## To run:
 ```./compiler program.il```
 
+---
+
 ## **Program Structure**
 
 ### **1. Program Declaration**
@@ -109,10 +111,6 @@ tapos
 1. **Case-sensitive** identifiers
 2. **Variables must be declared** before use
 3. **Statements end with periods** (`.`)
-4. **No control flow** (no if/while)
-5. **No functions or procedures**
-6. **No I/O operations**
-7. **No arrays or structures**
 8. **Type declarations only** (no type checking in expressions)
 
 ---
