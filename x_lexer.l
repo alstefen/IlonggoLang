@@ -13,6 +13,7 @@ IDENTIFIER  {LETTER}({LETTER}|{DIGIT})*
 INTEGER     {DIGIT}+
 FLOAT       {DIGIT}+"."{DIGIT}+
 CHAR        '.'
+STRING      \"[^\"]*\"
 
 %%
 
@@ -24,6 +25,7 @@ CHAR        '.'
 "sugod"             { return START; }
 "tapos"             { return FINISH; }
 "mga"               { return VAR; }
+"ipakita"           { return PRINT; }
 
 "numero"            { return INT_TYPE; }
 "lutaw"             { return FLOAT_TYPE; }
@@ -32,6 +34,11 @@ CHAR        '.'
 {INTEGER}           { yylval.ival = atoi(yytext); return INTEGER; }
 {FLOAT}             { yylval.fval = atof(yytext); return FLOAT; }
 {CHAR}              { yylval.cval = yytext[1]; return CHAR; }
+{STRING}            {
+                      strncpy(yylval.sval, yytext + 1, strlen(yytext) - 2);
+                      yylval.sval[strlen(yytext) - 2] = '\0';
+                      return STRING;
+                    }
 {IDENTIFIER}        { strcpy(yylval.sval, yytext); return IDENTIFIER; }
 
 "+"                 { return PLUS; }
