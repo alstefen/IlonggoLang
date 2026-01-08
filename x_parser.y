@@ -21,7 +21,7 @@ typedef struct {
     VarType type;
     int addr;
     int line;
-    long long value;  // Runtime value
+    long long value;
 } Symbol;
 
 typedef struct {
@@ -43,7 +43,6 @@ typedef struct {
     unsigned int funct;
 } InstructionDef;
 
-// Runtime register simulation
 typedef struct {
     long long value;
 } Register;
@@ -55,7 +54,7 @@ static StringLiteral string_table[MAX_STRINGS];
 static int string_count = 0;
 static char temp_regs[MAX_TEMP_REGS][16];
 static int temp_count = 0;
-static Register registers[MAX_TEMP_REGS];  // Simulated registers
+static Register registers[MAX_TEMP_REGS];
 static FILE *output_file = NULL;
 static int has_errors = 0;
 
@@ -140,7 +139,6 @@ program:
             YYABORT;
         }
         fprintf(output_file, "=== Assembly Code for Program: %s ===\n\n", $2);
-        fprintf(output_file, "=== PROGRAM OUTPUT ===\n");
         printf("\n=== PROGRAM OUTPUT ===\n");
     }
     var_section main_section
@@ -155,33 +153,17 @@ program:
         }
 
         printf("\n=== END OF OUTPUT ===\n");
-        fprintf(output_file, "\n=== END OF OUTPUT ===\n\n");
 
         printf("\n✓ Program syntax is correct!\n");
         printf("✓ Assembly code generated in output_asm.txt\n\n");
 
-        // Print summary
-        fprintf(output_file, "\n=== Assembly Code ===\n\n");
-        fprintf(output_file, ".data\n");
-
-        // Print variables
-        for (int i = 0; i < symbol_count; i++) {
-            fprintf(output_file, "%s: .dword 0    # Address: 0x%08X, Final value: %lld\n",
-                    symbol_table[i].name, symbol_table[i].addr, symbol_table[i].value);
-        }
-
-        // Print string literals
-        if (string_count > 0) {
-            fprintf(output_file, "\n# String literals\n");
-            for (int i = 0; i < string_count; i++) {
-                fprintf(output_file, "%s: .asciiz \"%s\"\n",
-                    string_table[i].label, string_table[i].content);
-            }
-        }
-
         fprintf(output_file, "\n=== Summary ===\n");
         fprintf(output_file, "Total variables declared: %d\n", symbol_count);
         fprintf(output_file, "Total string literals: %d\n", string_count);
+        fprintf(output_file, "\nFinal variable values:\n");
+        for (int i = 0; i < symbol_count; i++) {
+            fprintf(output_file, "  %s = %lld\n", symbol_table[i].name, symbol_table[i].value);
+        }
 
         if (output_file) {
             fclose(output_file);
@@ -191,7 +173,21 @@ program:
     ;
 
 var_section:
-    VAR LBRACE variable_declarations RBRACE
+    VAR LBRACE
+    {
+        fprintf(output_file, ".data\n");
+    }
+    variable_declarations RBRACE
+    {
+        if (string_count > 0) {
+            fprintf(output_file, "\n# String literals\n");
+            for (int i = 0; i < string_count; i++) {
+                fprintf(output_file, "%s: .asciiz \"%s\"\n",
+                    string_table[i].label, string_table[i].content);
+            }
+        }
+        fprintf(output_file, "\n.code\n\n");
+    }
     ;
 
 variable_declarations:
@@ -210,6 +206,9 @@ variable_list:
             has_errors = 1;
             YYABORT;
         }
+        int idx = lookup_symbol($1);
+        fprintf(output_file, "%s: .dword 0    # Address: 0x%08X\n",
+                $1, symbol_table[idx].addr);
     }
     | variable_list COMMA IDENTIFIER
     {
@@ -217,6 +216,9 @@ variable_list:
             has_errors = 1;
             YYABORT;
         }
+        int idx = lookup_symbol($3);
+        fprintf(output_file, "%s: .dword 0    # Address: 0x%08X\n",
+                $3, symbol_table[idx].addr);
     }
     ;
 
@@ -227,7 +229,11 @@ type:
     ;
 
 main_section:
-    START statements FINISH
+    START
+    {
+        fprintf(output_file, "# Main section\n");
+    }
+    statements FINISH
     ;
 
 statements:
@@ -238,33 +244,35 @@ statements:
 statement:
     IDENTIFIER ASSIGN expression PERIOD
     {
-        // Check if variable is declared
         if (lookup_symbol($1) < 0) {
             fprintf(stderr, "Error at line %d: Undeclared variable '%s'\n", yylineno, $1);
             has_errors = 1;
             YYABORT;
         }
 
-        // Execute the assignment
+        fprintf(output_file, "\n# Assignment: %s = expression\n", $1);
+        fprintf(output_file, "# ----------------------------------------\n");
+
+        generate_store($3, $1);
         execute_store($3, $1);
 
-        // Print debug info
-        int idx = lookup_symbol($1);
-        printf("  [Debug] %s = %lld\n", $1, symbol_table[idx].value);
-        fprintf(output_file, "[Debug] %s = %lld\n", $1, symbol_table[idx].value);
-
+        fprintf(output_file, "# ----------------------------------------\n\n");
         reset_temps();
     }
     | PRINT LPAREN print_argument RPAREN PERIOD
     {
-        // Check if it's a string literal (starts with str_)
+        fprintf(output_file, "\n# Print statement: ipakita()\n");
+        fprintf(output_file, "# ----------------------------------------\n");
+
         if (strncmp($3, "str_", 4) == 0) {
+            generate_print_string($3);
             execute_print_string($3);
         } else {
-            // It's a register containing an integer
+            generate_print_integer($3);
             execute_print_integer($3);
         }
 
+        fprintf(output_file, "# ----------------------------------------\n\n");
         reset_temps();
     }
     ;
@@ -272,7 +280,6 @@ statement:
 print_argument:
     STRING
     {
-        // Add string to string table and return its label
         const char *label = add_string_literal($1);
         strcpy($$, label);
     }
@@ -291,12 +298,14 @@ expression:
     {
         const char *result = allocate_temp();
         strcpy($$, result);
+        generate_binary_op($$, $1, $3, '+');
         execute_binary_op($$, $1, $3, '+');
     }
     | expression MINUS term
     {
         const char *result = allocate_temp();
         strcpy($$, result);
+        generate_binary_op($$, $1, $3, '-');
         execute_binary_op($$, $1, $3, '-');
     }
     ;
@@ -310,12 +319,14 @@ term:
     {
         const char *result = allocate_temp();
         strcpy($$, result);
+        generate_binary_op($$, $1, $3, '*');
         execute_binary_op($$, $1, $3, '*');
     }
     | term DIVIDE factor
     {
         const char *result = allocate_temp();
         strcpy($$, result);
+        generate_binary_op($$, $1, $3, '/');
         execute_binary_op($$, $1, $3, '/');
     }
     ;
@@ -325,18 +336,21 @@ factor:
     {
         const char *reg = allocate_temp();
         strcpy($$, reg);
+        generate_load_immediate(reg, $1);
         execute_load_immediate(reg, $1);
     }
     | FLOAT
     {
         const char *reg = allocate_temp();
         strcpy($$, reg);
+        generate_load_immediate(reg, (int)$1);
         execute_load_immediate(reg, (int)$1);
     }
     | CHAR
     {
         const char *reg = allocate_temp();
         strcpy($$, reg);
+        generate_load_immediate(reg, (int)(unsigned char)$1);
         execute_load_immediate(reg, (int)(unsigned char)$1);
     }
     | IDENTIFIER
@@ -348,6 +362,7 @@ factor:
         }
         const char *reg = allocate_temp();
         strcpy($$, reg);
+        generate_load(reg, $1);
         execute_load(reg, $1);
     }
     | LPAREN expression RPAREN
@@ -358,12 +373,14 @@ factor:
     {
         const char *reg = allocate_temp();
         strcpy($$, reg);
+        generate_load_immediate(reg, -$2);
         execute_load_immediate(reg, -$2);
     }
     | MINUS FLOAT
     {
         const char *reg = allocate_temp();
         strcpy($$, reg);
+        generate_load_immediate(reg, (int)(-$2));
         execute_load_immediate(reg, (int)(-$2));
     }
     ;
@@ -375,7 +392,6 @@ void yyerror(const char *s) {
     has_errors = 1;
 }
 
-// Symbol table functions
 int add_symbol(const char *name, VarType type) {
     if (lookup_symbol(name) >= 0) {
         fprintf(stderr, "Error at line %d: Variable '%s' already declared\n", yylineno, name);
@@ -428,7 +444,6 @@ void reset_temps() {
     temp_count = 0;
 }
 
-// Runtime interpreter functions
 int get_reg_num(const char *reg) {
     if (reg[0] == 'R') {
         return atoi(reg + 1);
@@ -498,11 +513,9 @@ void execute_binary_op(const char *result, const char *left, const char *right, 
 }
 
 void execute_print_string(const char *label) {
-    // Find the string in the string table
     for (int i = 0; i < string_count; i++) {
         if (strcmp(string_table[i].label, label) == 0) {
             printf("%s", string_table[i].content);
-            fprintf(output_file, "%s", string_table[i].content);
             return;
         }
     }
@@ -511,10 +524,8 @@ void execute_print_string(const char *label) {
 void execute_print_integer(const char *reg) {
     long long value = get_reg_value(reg);
     printf("%lld", value);
-    fprintf(output_file, "%lld", value);
 }
 
-// Code generation functions (keep for assembly output)
 const InstructionDef* find_instruction(const char *instr) {
     for (int i = 0; instruction_table[i].name != NULL; i++) {
         if (strcmp(instruction_table[i].name, instr) == 0) {
