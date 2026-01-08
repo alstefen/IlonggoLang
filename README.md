@@ -2,7 +2,7 @@
 From the project root directory in your terminal:
 1. ```flex x_lexer.l```
 2. ```bison -d x_parser.y```
-3. ```gcc lex.yy.c x_parser.tab.c -o compiler -lfl```
+3. ```gcc x_parser.tab.c lex.yy.c -o compiler.exe```
 ## To run:
 ```./compiler program.il```
 
