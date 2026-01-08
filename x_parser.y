@@ -21,6 +21,7 @@ typedef struct {
     VarType type;
     int addr;
     int line;
+    long long value;  // Runtime value
 } Symbol;
 
 typedef struct {
@@ -42,6 +43,11 @@ typedef struct {
     unsigned int funct;
 } InstructionDef;
 
+// Runtime register simulation
+typedef struct {
+    long long value;
+} Register;
+
 // Global variables
 static Symbol symbol_table[MAX_SYMBOLS];
 static int symbol_count = 0;
@@ -49,6 +55,7 @@ static StringLiteral string_table[MAX_STRINGS];
 static int string_count = 0;
 static char temp_regs[MAX_TEMP_REGS][16];
 static int temp_count = 0;
+static Register registers[MAX_TEMP_REGS];  // Simulated registers
 static FILE *output_file = NULL;
 static int has_errors = 0;
 
@@ -86,6 +93,17 @@ unsigned int encode_i_type(unsigned int opcode, int rs, int rt, int imm);
 const InstructionDef* find_instruction(const char *instr);
 void machine_code_to_binary(unsigned int machine, char *binary);
 
+// Runtime interpreter functions
+int get_reg_num(const char *reg);
+long long get_reg_value(const char *reg);
+void set_reg_value(const char *reg, long long value);
+void execute_load(const char *reg, const char *var);
+void execute_load_immediate(const char *reg, long long value);
+void execute_store(const char *reg, const char *var);
+void execute_binary_op(const char *result, const char *left, const char *right, char op);
+void execute_print_string(const char *label);
+void execute_print_integer(const char *reg);
+
 %}
 
 %union {
@@ -122,11 +140,13 @@ program:
             YYABORT;
         }
         fprintf(output_file, "=== Assembly Code for Program: %s ===\n\n", $2);
+        fprintf(output_file, "=== PROGRAM OUTPUT ===\n");
+        printf("\n=== PROGRAM OUTPUT ===\n");
     }
     var_section main_section
     {
         if (has_errors) {
-            printf("✗ Compilation failed with errors\n");
+            printf("\n✗ Compilation failed with errors\n");
             if (output_file) {
                 fclose(output_file);
                 output_file = NULL;
@@ -134,10 +154,31 @@ program:
             YYABORT;
         }
 
-        printf("✓ Program syntax is correct!\n");
-//        printf("✓ Assembly code generated in output_asm.txt\n\n");
+        printf("\n=== END OF OUTPUT ===\n");
+        fprintf(output_file, "\n=== END OF OUTPUT ===\n\n");
+
+        printf("\n✓ Program syntax is correct!\n");
+        printf("✓ Assembly code generated in output_asm.txt\n\n");
 
         // Print summary
+        fprintf(output_file, "\n=== Assembly Code ===\n\n");
+        fprintf(output_file, ".data\n");
+
+        // Print variables
+        for (int i = 0; i < symbol_count; i++) {
+            fprintf(output_file, "%s: .dword 0    # Address: 0x%08X, Final value: %lld\n",
+                    symbol_table[i].name, symbol_table[i].addr, symbol_table[i].value);
+        }
+
+        // Print string literals
+        if (string_count > 0) {
+            fprintf(output_file, "\n# String literals\n");
+            for (int i = 0; i < string_count; i++) {
+                fprintf(output_file, "%s: .asciiz \"%s\"\n",
+                    string_table[i].label, string_table[i].content);
+            }
+        }
+
         fprintf(output_file, "\n=== Summary ===\n");
         fprintf(output_file, "Total variables declared: %d\n", symbol_count);
         fprintf(output_file, "Total string literals: %d\n", string_count);
@@ -150,22 +191,7 @@ program:
     ;
 
 var_section:
-    VAR LBRACE
-    {
-        fprintf(output_file, ".data\n");
-    }
-    variable_declarations RBRACE
-    {
-        // Add string literals to data section
-        if (string_count > 0) {
-            fprintf(output_file, "\n# String literals\n");
-            for (int i = 0; i < string_count; i++) {
-                fprintf(output_file, "%s: .asciiz \"%s\"\n",
-                    string_table[i].label, string_table[i].content);
-            }
-        }
-        fprintf(output_file, "\n.code\n\n");
-    }
+    VAR LBRACE variable_declarations RBRACE
     ;
 
 variable_declarations:
@@ -184,9 +210,6 @@ variable_list:
             has_errors = 1;
             YYABORT;
         }
-        int idx = lookup_symbol($1);
-        fprintf(output_file, "%s: .dword 0    # Address: 0x%08X\n",
-                $1, symbol_table[idx].addr);
     }
     | variable_list COMMA IDENTIFIER
     {
@@ -194,9 +217,6 @@ variable_list:
             has_errors = 1;
             YYABORT;
         }
-        int idx = lookup_symbol($3);
-        fprintf(output_file, "%s: .dword 0    # Address: 0x%08X\n",
-                $3, symbol_table[idx].addr);
     }
     ;
 
@@ -207,11 +227,7 @@ type:
     ;
 
 main_section:
-    START
-    {
-        fprintf(output_file, "# Main section\n");
-    }
-    statements FINISH
+    START statements FINISH
     ;
 
 statements:
@@ -229,29 +245,26 @@ statement:
             YYABORT;
         }
 
-        fprintf(output_file, "\n# Assignment: %s = expression\n", $1);
-        fprintf(output_file, "# ----------------------------------------\n");
+        // Execute the assignment
+        execute_store($3, $1);
 
-        // Store result to variable
-        generate_store($3, $1);
+        // Print debug info
+        int idx = lookup_symbol($1);
+        printf("  [Debug] %s = %lld\n", $1, symbol_table[idx].value);
+        fprintf(output_file, "[Debug] %s = %lld\n", $1, symbol_table[idx].value);
 
-        fprintf(output_file, "# ----------------------------------------\n\n");
         reset_temps();
     }
     | PRINT LPAREN print_argument RPAREN PERIOD
     {
-        fprintf(output_file, "\n# Print statement: ipakita()\n");
-        fprintf(output_file, "# ----------------------------------------\n");
-
         // Check if it's a string literal (starts with str_)
         if (strncmp($3, "str_", 4) == 0) {
-            generate_print_string($3);
+            execute_print_string($3);
         } else {
             // It's a register containing an integer
-            generate_print_integer($3);
+            execute_print_integer($3);
         }
 
-        fprintf(output_file, "# ----------------------------------------\n\n");
         reset_temps();
     }
     ;
@@ -278,13 +291,13 @@ expression:
     {
         const char *result = allocate_temp();
         strcpy($$, result);
-        generate_binary_op($$, $1, $3, '+');
+        execute_binary_op($$, $1, $3, '+');
     }
     | expression MINUS term
     {
         const char *result = allocate_temp();
         strcpy($$, result);
-        generate_binary_op($$, $1, $3, '-');
+        execute_binary_op($$, $1, $3, '-');
     }
     ;
 
@@ -297,13 +310,13 @@ term:
     {
         const char *result = allocate_temp();
         strcpy($$, result);
-        generate_binary_op($$, $1, $3, '*');
+        execute_binary_op($$, $1, $3, '*');
     }
     | term DIVIDE factor
     {
         const char *result = allocate_temp();
         strcpy($$, result);
-        generate_binary_op($$, $1, $3, '/');
+        execute_binary_op($$, $1, $3, '/');
     }
     ;
 
@@ -312,19 +325,19 @@ factor:
     {
         const char *reg = allocate_temp();
         strcpy($$, reg);
-        generate_load_immediate(reg, $1);
+        execute_load_immediate(reg, $1);
     }
     | FLOAT
     {
         const char *reg = allocate_temp();
         strcpy($$, reg);
-        generate_load_immediate(reg, (int)$1);
+        execute_load_immediate(reg, (int)$1);
     }
     | CHAR
     {
         const char *reg = allocate_temp();
         strcpy($$, reg);
-        generate_load_immediate(reg, (int)(unsigned char)$1);
+        execute_load_immediate(reg, (int)(unsigned char)$1);
     }
     | IDENTIFIER
     {
@@ -335,7 +348,7 @@ factor:
         }
         const char *reg = allocate_temp();
         strcpy($$, reg);
-        generate_load(reg, $1);
+        execute_load(reg, $1);
     }
     | LPAREN expression RPAREN
     {
@@ -345,13 +358,13 @@ factor:
     {
         const char *reg = allocate_temp();
         strcpy($$, reg);
-        generate_load_immediate(reg, -$2);
+        execute_load_immediate(reg, -$2);
     }
     | MINUS FLOAT
     {
         const char *reg = allocate_temp();
         strcpy($$, reg);
-        generate_load_immediate(reg, (int)(-$2));
+        execute_load_immediate(reg, (int)(-$2));
     }
     ;
 
@@ -378,6 +391,7 @@ int add_symbol(const char *name, VarType type) {
     symbol_table[symbol_count].type = type;
     symbol_table[symbol_count].addr = symbol_count * 8;
     symbol_table[symbol_count].line = yylineno;
+    symbol_table[symbol_count].value = 0;
     symbol_count++;
     return 1;
 }
@@ -414,7 +428,93 @@ void reset_temps() {
     temp_count = 0;
 }
 
-// Code generation functions
+// Runtime interpreter functions
+int get_reg_num(const char *reg) {
+    if (reg[0] == 'R') {
+        return atoi(reg + 1);
+    }
+    return -1;
+}
+
+long long get_reg_value(const char *reg) {
+    int num = get_reg_num(reg);
+    if (num >= 0 && num < MAX_TEMP_REGS) {
+        return registers[num].value;
+    }
+    return 0;
+}
+
+void set_reg_value(const char *reg, long long value) {
+    int num = get_reg_num(reg);
+    if (num >= 0 && num < MAX_TEMP_REGS) {
+        registers[num].value = value;
+    }
+}
+
+void execute_load(const char *reg, const char *var) {
+    int idx = lookup_symbol(var);
+    if (idx >= 0) {
+        set_reg_value(reg, symbol_table[idx].value);
+    }
+}
+
+void execute_load_immediate(const char *reg, long long value) {
+    set_reg_value(reg, value);
+}
+
+void execute_store(const char *reg, const char *var) {
+    int idx = lookup_symbol(var);
+    if (idx >= 0) {
+        symbol_table[idx].value = get_reg_value(reg);
+    }
+}
+
+void execute_binary_op(const char *result, const char *left, const char *right, char op) {
+    long long left_val = get_reg_value(left);
+    long long right_val = get_reg_value(right);
+    long long result_val = 0;
+
+    switch (op) {
+        case '+':
+            result_val = left_val + right_val;
+            break;
+        case '-':
+            result_val = left_val - right_val;
+            break;
+        case '*':
+            result_val = left_val * right_val;
+            break;
+        case '/':
+            if (right_val != 0) {
+                result_val = left_val / right_val;
+            } else {
+                fprintf(stderr, "Error: Division by zero\n");
+                has_errors = 1;
+            }
+            break;
+    }
+
+    set_reg_value(result, result_val);
+}
+
+void execute_print_string(const char *label) {
+    // Find the string in the string table
+    for (int i = 0; i < string_count; i++) {
+        if (strcmp(string_table[i].label, label) == 0) {
+            printf("%s", string_table[i].content);
+            fprintf(output_file, "%s", string_table[i].content);
+            return;
+        }
+    }
+}
+
+void execute_print_integer(const char *reg) {
+    long long value = get_reg_value(reg);
+    printf("%lld", value);
+    fprintf(output_file, "%lld", value);
+}
+
+// Code generation functions (keep for assembly output)
 const InstructionDef* find_instruction(const char *instr) {
     for (int i = 0; instruction_table[i].name != NULL; i++) {
         if (strcmp(instruction_table[i].name, instr) == 0) {
@@ -533,19 +633,14 @@ void generate_binary_op(const char *result, const char *left, const char *right,
 void generate_print_string(const char *label) {
     char info[128];
 
-    // Load address of string into R4 (syscall argument register)
-    // In MIPS64, we use LUI + ORI to load full address
-    // For simplicity, we'll use a pseudo-instruction LA (load address)
     fprintf(output_file, "   # Load string address\n");
     fprintf(output_file, "   LA R4, %s\n", label);
     fprintf(output_file, "   >> [INFO] Load address of %s into R4\n", label);
 
-    // Set syscall code for print_string (4)
     snprintf(info, sizeof(info), "[ Set syscall code 4 (print_string) ]");
     fprintf(output_file, "   DADDIU R2, R0, #4\n");
     generate_machine_code("DADDIU", 0, 0, 2, 4, info);
 
-    // Execute syscall
     snprintf(info, sizeof(info), "[ Execute syscall (print string) ]");
     fprintf(output_file, "   SYSCALL\n");
     generate_machine_code("SYSCALL", 0, 0, 0, 0, info);
@@ -555,19 +650,16 @@ void generate_print_integer(const char *reg) {
     int reg_num = atoi(reg + 1);
     char info[128];
 
-    // Move value to R4 (syscall argument register)
     if (reg_num != 4) {
         snprintf(info, sizeof(info), "[ Move %s to R4 for syscall ]", reg);
         fprintf(output_file, "   DADDU R4, R0, %s\n", reg);
         generate_machine_code("DADDU", 4, 0, reg_num, 0, info);
     }
 
-    // Set syscall code for print_int (1)
     snprintf(info, sizeof(info), "[ Set syscall code 1 (print_int) ]");
     fprintf(output_file, "   DADDIU R2, R0, #1\n");
     generate_machine_code("DADDIU", 0, 0, 2, 1, info);
 
-    // Execute syscall
     snprintf(info, sizeof(info), "[ Execute syscall (print integer) ]");
     fprintf(output_file, "   SYSCALL\n");
     generate_machine_code("SYSCALL", 0, 0, 0, 0, info);
